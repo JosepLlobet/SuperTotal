@@ -194,70 +194,20 @@
             };
 
             const extractPriceAndName = (text) => {
+                // Esta función ya no se usa con Google Vision
+                // Se mantiene por compatibilidad pero Google Vision hace todo el trabajo
                 const lines = text.split('\n').filter(l => l.trim().length > 0);
                 
-                const pricesFound = [];
-                // Buscar precios con € o sin €
-                const pricePatterns = [
-                    /€\s*(\d+)[.,](\d{2})/g,
-                    /(\d+)[.,](\d{2})\s*€/g,
-                    /(\d+)[.,](\d{2})/g
-                ];
-                
-                lines.forEach((line, index) => {
-                    pricePatterns.forEach(pattern => {
-                        let match;
-                        const lineStr = String(line);
-                        while ((match = pattern.exec(lineStr)) !== null) {
-                            const price = parseFloat(`${match[1]}.${match[2]}`);
-                            if (price >= 0.10 && price <= 999) {
-                                // Calcular "importancia" del precio basado en:
-                                // 1. Posición en el texto (arriba = más importante)
-                                // 2. Tamaño del número (más grande = más importante)
-                                const positionScore = (10 - index) * 2; // Primeras líneas más importantes
-                                const sizeScore = price; // Precio más alto tiene más peso
-                                
-                                pricesFound.push({
-                                    price: price,
-                                    line: line,
-                                    lineIndex: index,
-                                    score: positionScore + sizeScore,
-                                    rawMatch: match[0]
-                                });
-                            }
-                        }
-                    });
-                });
-
-                if (pricesFound.length === 0) {
-                    return { name: '', price: 0 };
-                }
-
-                // Ordenar por puntuación (score) - el precio principal tendrá mayor score
-                pricesFound.sort((a, b) => b.score - a.score);
-                
-                // Si el precio más grande es significativamente mayor, es probablemente el principal
-                const maxPrice = Math.max(...pricesFound.map(p => p.price));
-                const topPrices = pricesFound.filter(p => p.price >= maxPrice * 0.8); // Precios similares al máximo
-                
-                // De los precios "grandes", elegir el que está más arriba
-                topPrices.sort((a, b) => a.lineIndex - b.lineIndex);
-                const mainPrice = topPrices[0] || pricesFound[0];
-
-                // Buscar nombre en las primeras líneas
                 let productName = '';
-                for (let i = 0; i < Math.min(6, lines.length); i++) {
+                for (let i = 0; i < Math.min(5, lines.length); i++) {
                     const line = lines[i].trim();
                     const hasLetters = /[a-záéíóúñA-ZÁÉÍÓÚÑ]{3,}/i.test(line);
                     const notOnlyNumbers = !/^\d+$/.test(line);
-                    const notBarcode = line.length < 20 || !/^\d{8,}$/.test(line);
                     
-                    if (hasLetters && notOnlyNumbers && notBarcode && line.length > 2) {
+                    if (hasLetters && notOnlyNumbers && line.length > 2) {
                         productName = line
                             .replace(/\d+[.,]\d{2}/g, '')
                             .replace(/€/g, '')
-                            .replace(/[^\w\sáéíóúñÁÉÍÓÚÑ]/g, ' ')
-                            .replace(/\s+/g, ' ')
                             .trim();
                         if (productName.length >= 3) break;
                     }
@@ -265,117 +215,137 @@
 
                 return {
                     name: productName.substring(0, 50) || 'Producto',
-                    price: mainPrice.price
+                    price: 0
                 };
             };
 
             const processImageWithOCR = async (file) => {
-                setScanProgress('📤 Optimizando imagen para móvil...');
+                setScanProgress('📤 Preparando imagen...');
                 
-                // Comprimir y redimensionar imagen para móvil
-                const compressedImage = await new Promise((resolve, reject) => {
+                // Convertir a base64
+                const base64Data = await new Promise((resolve, reject) => {
                     const reader = new FileReader();
-                    reader.onload = (e) => {
-                        const img = new Image();
-                        img.onload = () => {
-                            const canvas = document.createElement('canvas');
-                            
-                            // Redimensionar manteniendo aspecto si es muy grande
-                            let width = img.width;
-                            let height = img.height;
-                            const maxDimension = 1600; // Aumentado de 1024 a 1600
-                            
-                            if (width > maxDimension || height > maxDimension) {
-                                if (width > height) {
-                                    height = (height / width) * maxDimension;
-                                    width = maxDimension;
-                                } else {
-                                    width = (width / height) * maxDimension;
-                                    height = maxDimension;
-                                }
-                            }
-                            
-                            canvas.width = width;
-                            canvas.height = height;
-                            
-                            const ctx = canvas.getContext('2d');
-                            ctx.drawImage(img, 0, 0, width, height);
-                            
-                            // Comprimir a JPEG con calidad 0.85 (aumentado de 0.8)
-                            canvas.toBlob((blob) => {
-                                const reader2 = new FileReader();
-                                reader2.onload = () => resolve(reader2.result.split(',')[1]);
-                                reader2.onerror = () => reject(new Error('Error comprimiendo'));
-                                reader2.readAsDataURL(blob);
-                            }, 'image/jpeg', 0.85);
-                        };
-                        img.onerror = () => reject(new Error('Error cargando imagen'));
-                        img.src = e.target.result;
-                    };
-                    reader.onerror = () => reject(new Error('Error leyendo archivo'));
+                    reader.onload = () => resolve(reader.result.split(',')[1]);
+                    reader.onerror = () => reject(new Error('Error leyendo imagen'));
                     reader.readAsDataURL(file);
                 });
 
-                setScanProgress('🔍 Analizando etiqueta (5-10 segundos)...');
+                setScanProgress('🔍 Analizando con Google Vision...');
+                
+                const API_KEY = 'AIzaSyDGQaLysIPCCMatD4WVvnodiKzzu0By5tk';
                 
                 try {
-                    const response = await fetch('https://api.ocr.space/parse/image', {
+                    const response = await fetch(`https://vision.googleapis.com/v1/images:annotate?key=${API_KEY}`, {
                         method: 'POST',
                         headers: {
-                            'Content-Type': 'application/x-www-form-urlencoded',
+                            'Content-Type': 'application/json',
                         },
-                        body: new URLSearchParams({
-                            'apikey': 'helloworld',
-                            'base64Image': `data:image/jpeg;base64,${compressedImage}`,
-                            'language': 'spa',
-                            'isOverlayRequired': 'false',
-                            'detectOrientation': 'true',
-                            'scale': 'true',
-                            'OCREngine': '2',
-                            'filetype': 'JPG'
+                        body: JSON.stringify({
+                            requests: [
+                                {
+                                    image: {
+                                        content: base64Data
+                                    },
+                                    features: [
+                                        {
+                                            type: 'TEXT_DETECTION',
+                                            maxResults: 50
+                                        }
+                                    ]
+                                }
+                            ]
                         })
                     });
 
                     if (!response.ok) {
-                        throw new Error('Error en el servicio OCR');
+                        throw new Error('Error en Google Vision API');
                     }
 
                     const data = await response.json();
                     
-                    if (data.IsErroredOnProcessing) {
-                        throw new Error(data.ErrorMessage || 'Error procesando imagen');
-                    }
-                    
-                    if (!data.ParsedResults || data.ParsedResults.length === 0) {
-                        throw new Error('No se pudo leer texto en la etiqueta');
+                    if (!data.responses || !data.responses[0].textAnnotations) {
+                        throw new Error('No se detectó texto en la imagen');
                     }
 
-                    const text = data.ParsedResults[0].ParsedText;
+                    const annotations = data.responses[0].textAnnotations;
                     
-                    if (!text || text.trim().length === 0) {
-                        throw new Error('No se detectó texto. Asegúrate de que la etiqueta esté enfocada');
+                    setScanProgress('📝 Encontrando precio más grande...');
+                    
+                    // Analizar cada anotación para encontrar precios
+                    const pricesWithSize = [];
+                    
+                    for (let i = 1; i < annotations.length; i++) {
+                        const annotation = annotations[i];
+                        const text = annotation.description;
+                        
+                        // Buscar precios en el texto
+                        const priceMatch = text.match(/(\d+)[.,](\d{2})/);
+                        if (priceMatch) {
+                            const price = parseFloat(`${priceMatch[1]}.${priceMatch[2]}`);
+                            
+                            if (price >= 0.10 && price <= 999) {
+                                // Calcular el tamaño del bounding box (área del texto)
+                                const vertices = annotation.boundingPoly.vertices;
+                                const width = Math.abs(vertices[1].x - vertices[0].x);
+                                const height = Math.abs(vertices[2].y - vertices[1].y);
+                                const area = width * height;
+                                
+                                pricesWithSize.push({
+                                    price: price,
+                                    area: area,
+                                    width: width,
+                                    height: height,
+                                    text: text,
+                                    y: vertices[0].y // Posición vertical
+                                });
+                            }
+                        }
                     }
                     
-                    setScanProgress('📝 Extrayendo precio y nombre...');
-                    
-                    const { name, price } = extractPriceAndName(text);
-                    
-                    if (!price || price === 0) {
-                        throw new Error('No se detectó un precio válido. Asegúrate de que el precio sea visible');
+                    if (pricesWithSize.length === 0) {
+                        throw new Error('No se detectó ningún precio en la etiqueta');
                     }
-
-                    if (!name || name.length < 2) {
-                        throw new Error('No se detectó el nombre del producto');
+                    
+                    // Ordenar por ÁREA (tamaño visual) de mayor a menor
+                    pricesWithSize.sort((a, b) => b.area - a.area);
+                    
+                    // El precio con mayor área es el más grande visualmente
+                    const mainPrice = pricesWithSize[0];
+                    
+                    // Extraer nombre del producto (texto completo al principio)
+                    const fullText = annotations[0].description;
+                    const lines = fullText.split('\n').filter(l => l.trim().length > 0);
+                    
+                    let productName = '';
+                    for (let i = 0; i < Math.min(5, lines.length); i++) {
+                        const line = lines[i].trim();
+                        const hasLetters = /[a-záéíóúñA-ZÁÉÍÓÚÑ]{3,}/i.test(line);
+                        const notOnlyNumbers = !/^\d+$/.test(line);
+                        const notBarcode = line.length < 20 || !/^\d{8,}$/.test(line);
+                        const notPriceOnly = !line.match(/^\d+[.,]\d{2}\s*€?$/);
+                        
+                        if (hasLetters && notOnlyNumbers && notBarcode && notPriceOnly && line.length > 2) {
+                            productName = line
+                                .replace(/\d+[.,]\d{2}/g, '')
+                                .replace(/€/g, '')
+                                .replace(/[^\w\sáéíóúñÁÉÍÓÚÑ]/g, ' ')
+                                .replace(/\s+/g, ' ')
+                                .trim();
+                            if (productName.length >= 3) break;
+                        }
                     }
-
+                    
                     setScanProgress('✅ ¡Producto detectado!');
-                    
-                    // Limpiar progreso después de 1 segundo
                     setTimeout(() => setScanProgress(''), 1000);
                     
-                    return { name, price };
+                    return {
+                        name: productName.substring(0, 50) || 'Producto',
+                        price: mainPrice.price
+                    };
+                    
                 } catch (err) {
-                    if (err.message.includes('fetch')) {
+                    console.error('Error completo:', err);
+                    if (err.message.includes('fetch') || err.message.includes('network')) {
                         throw new Error('Error de conexión. Verifica tu internet');
                     }
                     throw err;
